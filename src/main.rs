@@ -59,61 +59,91 @@ pub extern "C" fn efi_main(image: uefi::Handle, system_table: SystemTable<Boot>)
             descriptor_version: 0,
         };
         let mut map_key = 0;
-        let mut descriptor_buffer: *mut u8 = core::ptr::null_mut();
-        let mut descriptor_buffer_size = 0;
+        let mut descriptor_size = 0;
         let mut descriptor_version = 0;
-        loop 
+        let mut status = system_table.boot_services()
+            .get_memory_map(&mut memory_map_size, memory_map.buffer,&mut map_key,&mut descriptor_size,&mut descriptor_version,);
+ 
+        while status == Status::BUFFER_TOO_SMALL 
         {
-            let status = system_table
+            let buffer_size = memory_map.buffer_size + descriptor_size * 16;
+            memory_map.buffer = system_table
                 .boot_services()
-                .get_memory_map( &mut memory_map_size,memory_map.buffer, &mut map_key, &mut memory_map.descriptor_size, &mut memory_map.descriptor_version,);
-            match status 
-            {
-                Status::SUCCESS => 
-                {
-                    descriptor_buffer_size = memory_map_size;
-                    descriptor_buffer = system_table
-                        .boot_services()
-                        .allocate_pool(MemoryType::LOADER_DATA, descriptor_buffer_size)
-                        .expect_success("Failed to allocate memory for descriptor buffer");
-                    break;
-                }
-                Status::BUFFER_TOO_SMALL => 
-                {
-                    memory_map.buffer_size = memory_map_size;
-                    memory_map.buffer = system_table
-                        .boot_services()
-                        .allocate_pool(MemoryType::LOADER_DATA, memory_map.buffer_size)
-                        .expect_success("Failed to allocate memory for memory map buffer");
-                }
-                _ => panic!("Failed to get memory map: {:?}", status),
-            }
+                .allocate_pool(MemoryType::LOADER_DATA, buffer_size)
+                .expect_success("Failed to allocate memory");
+ 
+            memory_map.buffer_size = buffer_size;
+ 
+            status = system_table.boot_services()
+            .get_memory_map(&mut memory_map_size,memory_map.buffer,&mut map_key,&mut descriptor_size,&mut descriptor_version,);
         }
  
-        let mut descriptors: Vec<MemoryDescriptor> = unsafe 
-        { 
-            core::slice::from_raw_parts_mut(descriptor_buffer as *mut MemoryDescriptor, descriptor_buffer_size as usize / memory_map.descriptor_size as usize) 
+        if status != Status::SUCCESS 
+        {
+            return status;
         }
-            .iter_mut()
-            .map(|x| {let mut descriptor: MemoryDescriptor = unsafe { core::mem::zeroed() }; *descriptor = *x; descriptor } )
-            .collect();
-        descriptors.sort_by_key(|desc| desc.physical_start);
  
-        let kernel_start = descriptors
-            .iter()
-            .find( |desc| { desc.ty == 7 && desc.number_of_pages >= 10 } )
-            .map(|desc| desc.physical_start)
-            .expect("Failed to find suitable memory region");
-        let kernel_pages = 10;
-        let kernel_end = kernel_start + kernel_pages * 4096;
-        let _ = writeln!(text_out, "Kernel start: 0x{:x}", kernel_start);
-        let _ = writeln!(text_out, "Kernel end: 0x{:x}", kernel_end);
-        let status = system_table
-            .boot_services()
-            .allocate_pages(AllocateType::ADDRESS, MemoryType::LOADER_DATA, kernel_pages, kernel_start)
-            .expect_success("Failed to allocate kernel memory");
-        let _ = writeln!(text_out, "Kernel allocated: {:?}", status);
+        memory_map.descriptor_size = descriptor_size;
+        memory_map.descriptor_version = descriptor_version;
+        memory_map.map_key = map_key;
  
-        loop {}
+        memory_map.map_size = memory_map_size;
+ 
+        memory_map_size
     };
+ 
+    let mut memory_map: MemoryMap = MemoryMap 
+    {
+        buffer_size: 0,
+        buffer: core::ptr::null_mut(),
+        map_size: 0,
+        map_key: 0,
+        descriptor_size: 0,
+        descriptor_version: 0,
+    };
+ 
+    memory_map.buffer = system_table
+        .boot_services()
+        .allocate_pool(MemoryType::LOADER_DATA, memory_map_size)
+        .expect_success("Failed to allocate memory");
+ 
+    let mut map_key = 0;
+    let mut descriptor_size = 0;
+    let mut descriptor_version = 0;
+    let mut status = system_table.boot_services().get_memory_map(
+        &mut memory_map.map_size,
+        memory_map.buffer,
+        &mut map_key,
+        &mut descriptor_size,
+        &mut descriptor_version,
+    );
+ 
+    while status == Status::BUFFER_TOO_SMALL 
+    {
+        let buffer_size = memory_map.buffer_size + descriptor_size * 16;
+        memory_map.buffer = system_table
+            .boot_services()
+            .allocate_pool(MemoryType::LOADER_DATA, buffer_size)
+            .expect_success("Failed to allocate memory");
+ 
+        memory_map.buffer_size = buffer_size;
+ 
+        status = system_table.boot_services().get_memory_map(
+            &mut memory_map.map_size,
+            memory_map.buffer,
+            &mut map_key,
+            &mut descriptor_size,
+            &mut descriptor_version,
+        );
+    }
+ 
+    if status != Status::SUCCESS {
+        return status;
+    }
+ 
+    let _ = system_table
+        .boot_services()
+        .exit_boot_services(image, memory_map.map_key)
+        .expect_success("Failed to exit boot services");
+    loop {}
 }
