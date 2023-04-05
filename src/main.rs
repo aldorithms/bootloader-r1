@@ -81,7 +81,8 @@ pub extern "C" fn efi_main(image: uefi::Handle, system_table: SystemTable<Boot>)
                 Status::BUFFER_TOO_SMALL => 
                 {
                     memory_map.buffer_size = memory_map_size;
-                    memory_map.buffer = system_table.boot_services()
+                    memory_map.buffer = system_table
+                        .boot_services()
                         .allocate_pool(MemoryType::LOADER_DATA, memory_map.buffer_size)
                         .expect_success("Failed to allocate memory for memory map buffer");
                 }
